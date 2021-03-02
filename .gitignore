@@ -15,7 +15,9 @@
 # vendor/
 
 Musify/
+downloaded/
 playlists.txt
 __debug_bin
 
 cache/
+playlists.all.txt

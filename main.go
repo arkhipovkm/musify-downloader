@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,6 +14,8 @@ import (
 	"github.com/arkhipovkm/musify/utils"
 	"github.com/arkhipovkm/musify/vk"
 )
+
+var BASE_PATH string = ""
 
 func escapeWindowsPath(s string) string {
 	forbidden := []string{
@@ -34,11 +35,10 @@ func escapeWindowsPath(s string) string {
 	return s
 }
 
-func downloadAudioChan(i int, audio *vk.Audio, album *vk.Playlist, dirname string, apicCoverData, apicIconData []byte, errChan chan error) {
+func downloadAudio(i int, audio *vk.Audio, album *vk.Playlist, dirname string, apicCoverData, apicIconData []byte) error {
 	var err error
 	if audio.URL == "" {
-		errChan <- err
-		return
+		return err
 	}
 	base := fmt.Sprintf("%02d", i+1) + " — " + escapeWindowsPath(audio.Performer) + " — " + escapeWindowsPath(audio.Title)
 	dirnameRune := []rune(dirname)
@@ -52,8 +52,7 @@ func downloadAudioChan(i int, audio *vk.Audio, album *vk.Playlist, dirname strin
 	)
 	err = download.Download(audio, filename)
 	if err != nil {
-		errChan <- err
-		return
+		return err
 	}
 	// Handle trck tag
 	var trck string
@@ -65,10 +64,15 @@ func downloadAudioChan(i int, audio *vk.Audio, album *vk.Playlist, dirname strin
 	// Write ID3 tags to file
 	id3File, err := id3.Open(filename)
 	if err != nil {
-		errChan <- err
-		return
+		return err
 	}
-	defer id3File.Close()
+	defer func() {
+		err = id3File.Close()
+		if err != nil {
+			log.Println(err)
+		}
+	}()
+	utils.SetID3TagAPICs(id3File, apicCoverData, apicIconData)
 	utils.SetID3Tag(
 		id3File,
 		album.AuthorName, // audio.Performer,
@@ -77,81 +81,63 @@ func downloadAudioChan(i int, audio *vk.Audio, album *vk.Playlist, dirname strin
 		album.YearInfoStr,
 		trck,
 	)
-	utils.SetID3TagAPICs(id3File, apicCoverData, apicIconData)
-	id3File.Close()
 	// Write ID3 tags to file
 
-	errChan <- err
-	return
+	return err
 }
 
 func main() {
+
+	playlistsFilePath := os.Args[1]
+	BASE_PATH = os.Args[2]
+
 	vkUser := vk.NewDefaultUser()
-	err := vkUser.Authenticate()
+	err := vkUser.Authenticate("", "")
+	if err != nil {
+		log.Printf("%#v\n", vkUser)
+		panic(err)
+	}
+	body, err := ioutil.ReadFile(playlistsFilePath)
 	if err != nil {
 		panic(err)
 	}
-	body, err := ioutil.ReadFile("playlists.txt")
-	if err != nil {
-		panic(err)
-	}
-	var albumIDs []string
-	for _, uri := range strings.Split(string(body), "\r\n") {
-		if uri != "" {
-			parsedURI, err := url.Parse(uri)
-			if err != nil {
-				panic(err)
-			}
-			albumID := filepath.Base(parsedURI.Path)
-			if albumID != "." {
-				albumIDs = append(albumIDs, albumID)
-			}
+	var failedAlbums []string
+	for _, albumID := range strings.Split(string(body), "\r\n") {
+		if albumID[0] == '#' {
+			continue
 		}
-	}
-	for _, albumID := range albumIDs {
 		playlist := vk.LoadPlaylist(albumID, vkUser)
 		if playlist == nil {
 			log.Println("Nil Playlist. Continuing..")
 			continue
 		}
-		errChan := make(chan error, len(playlist.List))
 		dirname := filepath.Join(
-			"D:",
-			"Musify",
+			BASE_PATH,
 			escapeWindowsPath(playlist.AuthorName),
 			escapeWindowsPath(playlist.Title),
 		)
-		if _, err := os.Stat(dirname); os.IsNotExist(err) {
-			log.Println("Starting download ", dirname)
-			err = os.MkdirAll(
-				dirname,
-				os.ModePerm,
-			)
-			if err != nil {
-				os.RemoveAll(dirname)
-				panic(err)
-			}
-			err = playlist.AcquireURLs(vkUser)
-			if err != nil {
-				os.RemoveAll(dirname)
-				panic(err)
-			}
-			playlist.DecypherURLs(vkUser)
-			apicCoverData, apicIconData := download.DownloadAPICs(playlist.List[0], playlist)
-			log.Println("Downloaded APICs: ", len(apicCoverData), len(apicIconData))
-			for i, audio := range playlist.List {
-				go downloadAudioChan(i, audio, playlist, dirname, apicCoverData, apicIconData, errChan)
-			}
-			for i := 0; i < len(playlist.List); i++ {
-				err := <-errChan
-				if err != nil {
-					os.RemoveAll(dirname)
-					panic(err)
-				}
-			}
-			log.Println("Finished download ", dirname)
-		} else {
-			log.Println(dirname, "already exists. Skipping..")
+		log.Println("Starting download ", dirname)
+		err = os.MkdirAll(
+			dirname,
+			os.ModePerm,
+		)
+		if err != nil {
+			panic(err)
 		}
+		playlist.AcquireURLs(vkUser)
+		playlist.DecypherURLs(vkUser)
+		playlist.CoverURL = ""
+		apicCoverData, apicIconData := download.DownloadAPICs(playlist.List[0], playlist)
+		log.Println("Downloaded APICs: ", len(apicCoverData), len(apicIconData))
+		for i, audio := range playlist.List {
+			err = downloadAudio(i, audio, playlist, dirname, apicCoverData, apicIconData)
+			if err != nil {
+				log.Println(err)
+				failedAlbums = append(failedAlbums, albumID)
+				break
+			}
+		}
+		log.Println("Finished download ", dirname)
 	}
+	log.Println(failedAlbums)
 }
