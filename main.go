@@ -72,7 +72,6 @@ func downloadAudio(i int, audio *vk.Audio, album *vk.Playlist, dirname string, a
 			log.Println(err)
 		}
 	}()
-	utils.SetID3TagAPICs(id3File, apicCoverData, apicIconData)
 	utils.SetID3Tag(
 		id3File,
 		album.AuthorName, // audio.Performer,
@@ -81,6 +80,7 @@ func downloadAudio(i int, audio *vk.Audio, album *vk.Playlist, dirname string, a
 		album.YearInfoStr,
 		trck,
 	)
+	utils.SetID3TagAPICs(id3File, apicCoverData, apicIconData)
 	// Write ID3 tags to file
 
 	return err
@@ -92,20 +92,39 @@ func main() {
 	BASE_PATH = os.Args[2]
 
 	vkUser := vk.NewDefaultUser()
-	err := vkUser.Authenticate("", "")
+	// err := vkUser.Authenticate("", "")
+	// if err != nil {
+	// 	log.Printf("%#v\n", vkUser)
+	// 	panic(err)
+	// }
+	// log.Println(vkUser.RemixSID)
+	vkUser.RemixSID = "47f8cd1bc57d5b28f7794e13291ea4652dfce6a7a75d74007bf30e3db31ec"
+	vkUser.ID = 5567597
+
+	csvBodyBytes, err := ioutil.ReadFile(playlistsFilePath)
 	if err != nil {
-		log.Printf("%#v\n", vkUser)
 		panic(err)
 	}
-	body, err := ioutil.ReadFile(playlistsFilePath)
-	if err != nil {
-		panic(err)
-	}
-	var failedAlbums []string
-	for _, albumID := range strings.Split(string(body), "\r\n") {
-		if albumID[0] == '#' {
+	csvBody := string(csvBodyBytes)
+	var albumIDs []string
+	for i, line := range strings.Split(csvBody, "\r\n") {
+		log.Println(i)
+		if i == 0 {
 			continue
 		}
+		if line == "" {
+			break
+		}
+		fmt.Println(line)
+		cols := strings.Split(line, ",")
+		uri := cols[0]
+		flag := cols[4]
+		if flag == "" && len(uri) > 1 {
+			albumID := filepath.Base(uri)
+			albumIDs = append(albumIDs, albumID)
+		}
+	}
+	for _, albumID := range albumIDs {
 		playlist := vk.LoadPlaylist(albumID, vkUser)
 		if playlist == nil {
 			log.Println("Nil Playlist. Continuing..")
@@ -128,16 +147,20 @@ func main() {
 		playlist.DecypherURLs(vkUser)
 		playlist.CoverURL = ""
 		apicCoverData, apicIconData := download.DownloadAPICs(playlist.List[0], playlist)
+		// ioutil.WriteFile("apicIcon.jpeg", apicIconData, os.ModePerm)
+		// ioutil.WriteFile("apicCover.jpeg", apicCoverData, os.ModePerm)
 		log.Println("Downloaded APICs: ", len(apicCoverData), len(apicIconData))
 		for i, audio := range playlist.List {
 			err = downloadAudio(i, audio, playlist, dirname, apicCoverData, apicIconData)
 			if err != nil {
 				log.Println(err)
-				failedAlbums = append(failedAlbums, albumID)
-				break
+				log.Println("Failed to download audio track. See error above.")
+				// failedAlbums = append(failedAlbums, albumID)
+				continue
 			}
 		}
-		log.Println("Finished download ", dirname)
+		log.Println("Finished downloading album: ", dirname)
 	}
-	log.Println(failedAlbums)
+	log.Println("Finished all albums.")
+	// log.Println("Failed albums:", failedAlbums)
 }

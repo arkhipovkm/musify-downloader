@@ -21,3 +21,8 @@ __debug_bin
 
 cache/
 playlists.all.txt
+
+*.ts
+tslist.txt
+.vscode/*
+*.jpeg
